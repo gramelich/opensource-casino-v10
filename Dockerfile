@@ -1,4 +1,4 @@
-# Dockerfile para OpenSource Casino v10 (Laravel + PHP + Node.js)
+# Dockerfile para OpenSource Casino v10 (Laravel dentro de /casino)
 FROM php:8.2-apache
 
 # Instala dependências do sistema
@@ -22,43 +22,49 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # Instala PM2 globalmente
 RUN npm install -g pm2
 
-# Define diretório de trabalho
-WORKDIR /var/www/html
+# Define diretório de trabalho: pasta do Laravel
+WORKDIR /var/www/html/casino
 
-# Copia o código do projeto
-COPY . .
+# Copia APENAS o conteúdo da pasta 'casino/' do repositório
+COPY casino/. .
 
-# Instala dependências PHP (Composer)
+# Instala dependências PHP (agora composer.json existe aqui)
 RUN composer install --optimize-autoloader --no-dev --no-scripts
 
-# Instala dependências Node.js (se houver package.json)
+# Instala dependências Node.js (se houver package.json na pasta casino/)
 RUN if [ -f package.json ]; then npm install && npm run build; fi
 
 # Permissões para Laravel
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html/storage
+RUN chown -R www-data:www-data /var/www/html/casino \
+    && chmod -R 755 /var/www/html/casino/storage \
+    && chmod -R 755 /var/www/html/casino/bootstrap/cache
 
-# Configura Apache para Laravel
+# Configura Apache para apontar para /casino/public
 RUN a2enmod rewrite \
-    && echo "<VirtualHost *:80>\n\
-DocumentRoot /var/www/html/public\n\
-<Directory /var/www/html/public>\n\
-AllowOverride All\n\
-</Directory>\n\
-</VirtualHost>" > /etc/apache2/sites-available/000-default.conf
+    && sed -i 's|DocumentRoot /var/www/html|DocumentRoot /var/www/html/casino/public|g' /etc/apache2/sites-available/000-default.conf \
+    && echo "<Directory /var/www/html/casino/public>\n\
+    AllowOverride All\n\
+    Require all granted\n\
+    </Directory>" >> /etc/apache2/sites-available/000-default.conf
 
-# Gera chave de app Laravel e roda migrations (assumindo .env pronto)
-RUN if [ -f .env ]; then cp .env .env.example; fi \
-    && php artisan key:generate \
-    && php artisan migrate --force
+# Gera chave e roda migrations (se .env existir)
+RUN cp .env.example .env 2>/dev/null || true \
+    && php artisan key:generate --force \
+    && php artisan migrate --force --no-interaction || true \
+    && php artisan storage:link || true
 
 # Expõe porta 80
 EXPOSE 80
 
-# Script de inicialização (inicia Apache e PM2)
+# Script de inicialização: PM2 + Apache
 RUN echo '#!/bin/bash\n\
-pm2 start ecosystem.config.js --env production || true\n\
+set -e\n\
+# Inicia PM2 (se ecosystem.config.js existir)\n\
+if [ -f ecosystem.config.js ]; then\n\
+  pm2 start ecosystem.config.js --env production || true\n\
+fi\n\
+# Inicia Apache\n\
 apache2-foreground' > /start.sh \
     && chmod +x /start.sh
 
-CMD ["/start.sh"]Dockerfile
+CMD ["/start.sh"]
